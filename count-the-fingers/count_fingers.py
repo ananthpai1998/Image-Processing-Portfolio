@@ -1,106 +1,84 @@
-import numpy as np
-import base64
-import logging
-from io import BytesIO
-from PIL import Image
 import cv2
+#I am using CV2 lib only for plotting boundary box around the fingers. All the finger detection logic is implemented using np or ndimageimport numpy as np.
+
+import numpy as np
 import scipy.ndimage
-from typing import Dict
 
-# Set up logging for error tracking and debugging
-logging.basicConfig(level=logging.INFO)
+cap = cv2.VideoCapture(0)
 
-# Define a 3x3 structuring element for convolution used for detecting finger-like structures
+if (cap.isOpened() is False):
+    print("Unable to read camera feed")
+
+frame_width = int(cap.get(3))
+frame_height = int(cap.get(4))
+
+out = cv2.VideoWriter('output.avi',
+                      cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'),
+                      10, (frame_width, frame_height))
+
+
+# This function is used to convert color image into grayscale image
+def get_grayscale(frame):     
+    red = frame[:,:,0].astype('uint8')
+    green = frame[:,:,1].astype('uint8')
+    blue = frame[:,:,2].astype('uint8')
+    grayscale = 0.21 * red + 0.72 * green + 0.07 * blue
+    return grayscale.astype('uint8')
+
+# This function will return the absolute difference between the frames
+def get_absolute_diff(graysclae_frame_current, graysclae_frame_previous):
+    graysclae_frame_current_normalized = (graysclae_frame_current - graysclae_frame_current.min()) / (graysclae_frame_current.max() - graysclae_frame_current.min()) * 255
+    noisy_abs = np.abs(graysclae_frame_current_normalized - graysclae_frame_previous).astype('uint8')
+    threshold = 30
+    clean_abs = (noisy_abs > threshold).astype('uint8') * 255
+    return clean_abs.astype('uint8')
+
 finger_structuring_element = np.array([
     [0, 1, 0],
     [1, 0, 1],
     [0, 1, 0]
 ], dtype=np.uint8)
 
-def identify_finger_like_objects(abs_frame: np.ndarray) -> np.ndarray:
-    """
-    Identify finger-like objects in the given frame based on convolution with a structuring element.
-    Args:
-        abs_frame (np.ndarray): The absolute difference frame where objects need to be identified.
-    Returns:
-        np.ndarray: The frame with bounding boxes drawn around detected objects.
-    """
-    # Apply convolution to the absolute frame with the finger structuring element
+# This fuction with return the absolute difference frames, with boundary box around the fingers. Also it prints the finger count.
+def identify_finger_like_objects(abs_frame):
     convolution_result = scipy.ndimage.convolve(abs_frame, finger_structuring_element, mode='constant', cval=0)
-    
-    # Threshold for identifying regions of interest
-    threshold = 50  
+    threshold = 10  
     finger_like_regions = (convolution_result >= threshold).astype(np.uint8) * 255
-    
-    # Label the connected components in the thresholded image
     labeled_objects, num_objects = scipy.ndimage.label(finger_like_regions)
-    
     if num_objects > 0:
-        # Find bounding boxes for each labeled object
         objects_boxes = scipy.ndimage.find_objects(labeled_objects)
+        #initilizing counter to count the fingers
+        count = 0
         for obj_box in objects_boxes:
             if obj_box is not None:
                 height = obj_box[0].stop - obj_box[0].start
                 width = obj_box[1].stop - obj_box[1].start
-                
-                # Filter objects by size to match typical finger dimensions
-                if (100 < height < 150) and (25 < width < 60):
-                    # Draw bounding box around the detected object
+                if (height > 100 and height < 150) and (width > 30 and width < 60):
+                    count += 1
                     cv2.rectangle(abs_frame, (obj_box[1].start, obj_box[0].start),
                                   (obj_box[1].stop, obj_box[0].stop), (255, 255, 255), 2)
-                    # Annotate the bounding box with the height and width
-                    cv2.putText(abs_frame, f'H: {height}, W: {width}', 
-                                (obj_box[1].start, obj_box[0].start - 10),
+                    cv2.putText(abs_frame, f'H: {height}, W: {width}', (obj_box[1].start, obj_box[0].start - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-    
+        print('Finger Count ', count)
     return abs_frame
 
-def count(data: Dict[str, str]) -> str:
-    """
-    Compare two frames and detect finger-like objects. Returns a base64 encoded image showing the results.
-    Args:
-        data (Dict[str, str]): Dictionary containing base64-encoded 'current_frame' and 'previous_frame'.
-    Returns:
-        str: Base64-encoded image showing detected finger-like objects.
-    """
-    result = ''
+graysclae_frame_previous = np.zeros((480, 640), dtype=np.uint8)
 
-    try:
-        # Decode the base64-encoded images from the data and convert them to grayscale
-        current_frame_img = Image.open(BytesIO(base64.b64decode(data['current_frame'].split(',')[1]))).convert('L')
-        previous_frame_img = Image.open(BytesIO(base64.b64decode(data['previous_frame'].split(',')[1]))).convert('L')
-        
-        # Convert PIL images to numpy arrays
-        current_frame = np.array(current_frame_img, dtype=np.float32)
-        previous_frame = np.array(previous_frame_img, dtype=np.float32)
-        
-        # Create a buffer to store the output image
-        buffered = BytesIO()
-        
-        # Ensure that both frames have the same dimensions before processing
-        if current_frame.shape == previous_frame.shape:
-            # Calculate the absolute difference between the current and previous frames
-            abs_diff = np.abs(current_frame - previous_frame)
-            
-            # Identify finger-like objects in the difference image
-            output_frame = identify_finger_like_objects(abs_diff)
-            
-            # Convert the output frame back to an image and save it as a JPEG
-            img = Image.fromarray(np.uint8(output_frame))
-            img.save(buffered, format="JPEG")
-            
-            # Encode the resulting image to base64
-            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-            result = {'frame': 'data:image/jpeg;base64,' + img_base64,
-                      'Description': 'Finger-like objects detected in the frame',
-                      'utility1': False,
-                      'utility2': 'Height'}
-        else:
-            logging.error("Frame dimensions do not match. Current frame: %s, Previous frame: %s",
-                          current_frame.shape, previous_frame.shape)
+# Main loop
+while(True):
+    ret, frame = cap.read()
+    if ret:
+        graysclae_frame_current = get_grayscale(frame)
+        abs_diff_frame = get_absolute_diff(graysclae_frame_current, graysclae_frame_previous)
+        abs_frame_with_hand_detection = identify_finger_like_objects(abs_diff_frame)
+        out.write(abs_frame_with_hand_detection)
+        cv2.imshow('Frame', abs_frame_with_hand_detection)
+        graysclae_frame_previous = graysclae_frame_current
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    else:
+        break
 
-    except Exception as e:
-        # Log any errors that occur during the process
-        logging.error("Error in count function: %s", str(e))
-    
-    return result
+cap.release()
+out.release()
+cv2.destroyAllWindows()

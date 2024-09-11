@@ -17,9 +17,7 @@ def detect_motion(data: Dict[str, str]) -> str:
         
         current_frame = np.array(current_frame_img, dtype=np.float32)
         previous_frame = np.array(previous_frame_img, dtype=np.float32)
-        
-        buffered = BytesIO()
-        
+                
         if current_frame.shape == previous_frame.shape:
             abs_diff = np.abs(current_frame - previous_frame)
             
@@ -30,10 +28,7 @@ def detect_motion(data: Dict[str, str]) -> str:
             if significant_pixel_count / total_pixels > 0.005:
                 isMotionDetected = True
             
-            img = Image.fromarray(np.uint8(abs_diff))
-            img.save(buffered, format="JPEG")
             
-            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
             result = {'frame': data['current_frame'],
                       'Description': '',
                       'utility1': isMotionDetected,
